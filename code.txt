@@ -1,0 +1,75 @@
+cv2.namedWindow("image")
+cv2.setMouseCallback('image', click_event)
+_cm = 35
+_scale = 10
+z_dist = _cm*_scale#cm
+with depthai.Device(pipeline) as device:
+    try:
+        calibData = device.readCalibration2()
+        lensPosition = calibData.getLensPosition(depthai.CameraBoardSocket.RGB)
+        intrinsics = calibData.getCameraIntrinsics(depthai.CameraBoardSocket.RGB)
+        print("intrinsics: ", intrinsics)
+        np_intrinsics = np.array(intrinsics)
+        np_intrinsics=np.linalg.inv(np_intrinsics)
+
+        # print("intrinsics: ", intrinsics)
+        if lensPosition:
+            cam_rgb.initialControl.setManualFocus(lensPosition)
+    except:
+        raise
+    # From this point, the Device will be in "running" mode and will start sending data via XLink
+
+    # To consume the device results, we get two output queues from the device, with stream names we assigned earlier
+    q_rgb = device.getOutputQueue("rgb")
+
+    # Here, some of the default values are defined. Frame will be an image from "rgb" stream, detections will contain nn results
+    frame = None
+    detections = []
+
+    # Since the detections returned by nn have values from <0..1> range, they need to be multiplied by frame width/height to
+    # receive the actual position of the bounding box on the image
+    def frameNorm(frame, bbox):
+        normVals = np.full(len(bbox), frame.shape[0])
+        normVals[::2] = frame.shape[1]
+        return (np.clip(np.array(bbox), 0, 1) * normVals).astype(int)
+
+    img_counter = 0
+    # Main host-side application loop
+    while True:
+        # we try to fetch the data from nn/rgb queues. tryGet will return either the data packet or None if there isn't any
+        in_rgb = q_rgb.tryGet()
+
+        if in_rgb is not None:
+            # If the packet from RGB camera is present, we're retrieving the frame in OpenCV format using getCvFrame
+            frame = in_rgb.getCvFrame()
+            # print(frame.shape)
+
+
+        if frame is not None:
+            for c in coords:
+                cv2.circle(frame, c, 5, (255, 0, 0), -1)
+                if(len(coords)==2):
+                    cv2.line(frame, coords[0], coords[1], (255, 0, 0), 5)
+                    dist = np.linalg.norm(np.array(coords[0])-np.array(coords[1]))
+                    
+                    
+                    pix_coord_1 = np.array([coords[0][0], coords[0][1], z_dist])
+                    pix_coord_2 = np.array([coords[1][0], coords[1][1], z_dist])
+
+                    real_coord_1 = pix_coord_1 @ np_intrinsics
+                    real_coord_2 = pix_coord_2 @ np_intrinsics 
+                    real_dist = np.linalg.norm(real_coord_1-real_coord_2)/_scale
+                    cv2.putText(frame, "cord 1: " + str(real_coord_1), (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA)
+                    cv2.putText(frame, "real_dist: " + str(real_dist), (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA)
+
+            # After all the drawing is finished, we show the frame on the screen
+            cv2.imshow("image", frame)
+
+        # at any time, you can press "q" and exit the main loop, therefore exiting the program itself
+        k = cv.waitKey(1)
+        if k%256 == 27:
+            # ESC pressed
+            print("Escape hit, closing...")
+            break
+
+cv2.destroyAllWindows()
